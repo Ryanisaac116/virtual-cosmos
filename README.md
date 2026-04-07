@@ -32,6 +32,7 @@ virtual-cosmos/
 - Spring Boot keeps active multiplayer session state in memory
 - Players join through REST, then exchange live updates through STOMP over SockJS
 - The frontend uses a PixiJS canvas for the world and React for UI
+- The world is bounded to a fixed playable area, and both frontend and backend clamp movement to stay inside it
 - Proximity chat appears only when another player is within the configured distance threshold
 - Presence is protected by explicit leave requests, websocket disconnect handling, frontend heartbeats, and backend stale-session cleanup
 
@@ -39,6 +40,7 @@ virtual-cosmos/
 
 - username join flow with persistent user lookup
 - real-time player movement and broadcasted positions
+- bounded world movement with server-side and client-side clamping
 - visible proximity radius in the world
 - proximity-triggered 1:1 chat
 - persisted chat history per room
@@ -66,6 +68,8 @@ virtual-cosmos/
   Returns chat history for a room
 - `backend/src/main/java/com/ryan/virtual_cosmos/service/UserSessionService.java`
   Owns in-memory active sessions, positions, session ids, and last activity timestamps
+- `backend/src/main/java/com/ryan/virtual_cosmos/config/WorldBounds.java`
+  Shared backend world size and clamp rules for spawn and movement limits
 - `backend/src/main/java/com/ryan/virtual_cosmos/service/ProximityService.java`
   Computes Euclidean distance and proximity enter/leave transitions
 - `backend/src/main/java/com/ryan/virtual_cosmos/service/SessionCleanupService.java`
@@ -92,7 +96,7 @@ virtual-cosmos/
 - `frontend/src/websocket/stompClient.js`
   Singleton STOMP client and current session tracking
 - `frontend/src/canvas/GameCanvas.jsx`
-  PixiJS world rendering, local movement, player interpolation, and visible proximity radius
+  PixiJS world rendering, local movement, interpolation, visible proximity radius, and world-boundary enforcement
 - `frontend/src/components/ChatPanel.jsx`
   Distance-driven chat panel UI, room resolution, and chat history loading
 - `frontend/src/lib/proximity.js`
@@ -118,6 +122,7 @@ Frontend UI highlights:
 - dark and light themes are supported across the app and persisted locally
 - the join flow is implemented as a dedicated landing-style entry screen
 - the world is rendered in PixiJS while React handles shell UI, chat, and theming
+- the playable area has a visible frame so the world edge feels intentional
 - the chat panel is only shown when a nearby partner is resolved
 - disconnects clear stale player, proximity, and active-room state from the UI
 
@@ -125,6 +130,7 @@ Frontend UI highlights:
 
 - Active player state is stored in memory on the backend for low-latency updates
 - Durable user identity and chat history are stored in MongoDB
+- Movement is clamped on both frontend and backend so players cannot leave the world bounds
 - Room ids are deterministic: the two user ids are sorted and joined with `_`
 - The frontend uses a small exit buffer beyond the visible proximity radius so chat does not flicker when users hover near the edge
 - STOMP session validation is used for movement, chat, and heartbeat messages so an old socket cannot keep mutating state after a reconnect
@@ -276,7 +282,7 @@ Payload:
 Behavior:
 
 - validates the current STOMP session for that user
-- updates the in-memory position
+- clamps the position to world bounds and updates the in-memory position
 - recalculates proximity
 - broadcasts `/topic/positions`
 
@@ -630,6 +636,7 @@ This project uses a single Git repository at the root:
 - chat history is persisted to MongoDB
 - movement, proximity, and chat use STOMP over SockJS
 - frontend heartbeats and backend scheduled cleanup help remove stale sessions
+- the world is restricted to a fixed playable area instead of infinite movement
 - proximity pairing becomes active at `140px`
 - the chat panel uses a small exit buffer near the radius edge to avoid flicker
 - the frontend build is healthy, though the main bundle is still larger than ideal

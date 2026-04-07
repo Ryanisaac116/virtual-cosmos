@@ -1,5 +1,6 @@
 package com.ryan.virtual_cosmos.service;
 
+import com.ryan.virtual_cosmos.config.WorldBounds;
 import com.ryan.virtual_cosmos.dto.UserStateDTO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -73,8 +74,8 @@ public class UserSessionService {
     public boolean updatePosition(String userId, String sessionId, double x, double y) {
         UserStateDTO state = activeSessions.get(userId);
         if (state != null && sessionId != null && sessionId.equals(state.getSessionId())) {
-            state.setX(x);
-            state.setY(y);
+            state.setX(WorldBounds.clampX(x));
+            state.setY(WorldBounds.clampY(y));
             state.setLastActivityAt(Instant.now());
             return true;
         }

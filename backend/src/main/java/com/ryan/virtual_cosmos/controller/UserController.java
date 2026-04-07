@@ -1,5 +1,6 @@
 package com.ryan.virtual_cosmos.controller;
 
+import com.ryan.virtual_cosmos.config.WorldBounds;
 import com.ryan.virtual_cosmos.dto.JoinRequestDTO;
 import com.ryan.virtual_cosmos.dto.UserStateDTO;
 import com.ryan.virtual_cosmos.model.User;
@@ -48,8 +49,8 @@ public class UserController {
         userRepository.save(user);
 
         // Assign random spawn position
-        double spawnX = ThreadLocalRandom.current().nextDouble(100, 500);
-        double spawnY = ThreadLocalRandom.current().nextDouble(100, 500);
+        double spawnX = ThreadLocalRandom.current().nextDouble(WorldBounds.MIN_X, WorldBounds.MAX_X);
+        double spawnY = ThreadLocalRandom.current().nextDouble(WorldBounds.MIN_Y, WorldBounds.MAX_Y);
 
         // Register in-memory session (sessionId set later on WebSocket connect)
         UserStateDTO state = UserStateDTO.builder()

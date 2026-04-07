@@ -1,10 +1,21 @@
 import { useEffect, useRef } from 'react';
 import { Application, Graphics, Text, TextStyle, Container } from 'pixi.js';
 import { useGameState } from '../store/GameContext';
-import { PLAYER_SPEED, INTERPOLATION_FACTOR, PROXIMITY_RADIUS } from '../types/constants';
+import {
+  CANVAS_HEIGHT,
+  CANVAS_WIDTH,
+  INTERPOLATION_FACTOR,
+  PLAYER_RADIUS,
+  PLAYER_SPEED,
+  PROXIMITY_RADIUS,
+} from '../types/constants';
 
 const CARD_WIDTH = 48;
 const CARD_HEIGHT = 58;
+
+function clampPosition(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
 
 export default function GameCanvas({ publishPosition, theme }) {
   const canvasRef = useRef(null);
@@ -69,10 +80,22 @@ export default function GameCanvas({ publishPosition, theme }) {
         let moved = false;
         const pos = positionRef.current;
 
-        if (keysRef.current['ArrowUp'] || keysRef.current['KeyW']) { pos.y -= speed; moved = true; }
-        if (keysRef.current['ArrowDown'] || keysRef.current['KeyS']) { pos.y += speed; moved = true; }
-        if (keysRef.current['ArrowLeft'] || keysRef.current['KeyA']) { pos.x -= speed; moved = true; }
-        if (keysRef.current['ArrowRight'] || keysRef.current['KeyD']) { pos.x += speed; moved = true; }
+        const nextPos = { x: pos.x, y: pos.y };
+
+        if (keysRef.current['ArrowUp'] || keysRef.current['KeyW']) { nextPos.y -= speed; moved = true; }
+        if (keysRef.current['ArrowDown'] || keysRef.current['KeyS']) { nextPos.y += speed; moved = true; }
+        if (keysRef.current['ArrowLeft'] || keysRef.current['KeyA']) { nextPos.x -= speed; moved = true; }
+        if (keysRef.current['ArrowRight'] || keysRef.current['KeyD']) { nextPos.x += speed; moved = true; }
+
+        nextPos.x = clampPosition(nextPos.x, PLAYER_RADIUS, CANVAS_WIDTH - PLAYER_RADIUS);
+        nextPos.y = clampPosition(nextPos.y, PLAYER_RADIUS, CANVAS_HEIGHT - PLAYER_RADIUS);
+
+        if (nextPos.x !== pos.x || nextPos.y !== pos.y) {
+          pos.x = nextPos.x;
+          pos.y = nextPos.y;
+        } else {
+          moved = false;
+        }
 
         if (moved && publishPosition && currentUser) {
           publishPosition(currentUser.userId, pos.x, pos.y);
@@ -88,8 +111,10 @@ export default function GameCanvas({ publishPosition, theme }) {
           if (userId === currentUser.userId) return;
           const container = playerContainers.current[userId];
           if (container) {
-            container.x += (target.x - container.x) * INTERPOLATION_FACTOR;
-            container.y += (target.y - container.y) * INTERPOLATION_FACTOR;
+            const clampedTargetX = clampPosition(target.x, PLAYER_RADIUS, CANVAS_WIDTH - PLAYER_RADIUS);
+            const clampedTargetY = clampPosition(target.y, PLAYER_RADIUS, CANVAS_HEIGHT - PLAYER_RADIUS);
+            container.x += (clampedTargetX - container.x) * INTERPOLATION_FACTOR;
+            container.y += (clampedTargetY - container.y) * INTERPOLATION_FACTOR;
           }
         });
 
@@ -227,8 +252,8 @@ export default function GameCanvas({ publishPosition, theme }) {
       }
 
       const container = createPlayerContainer(player, isCurrentUser, isNearby, color, palette);
-      container.x = player.x;
-      container.y = player.y;
+      container.x = clampPosition(player.x, PLAYER_RADIUS, CANVAS_WIDTH - PLAYER_RADIUS);
+      container.y = clampPosition(player.y, PLAYER_RADIUS, CANVAS_HEIGHT - PLAYER_RADIUS);
 
       worldContainer.addChild(container);
       playerContainers.current[player.userId] = container;
@@ -309,14 +334,20 @@ function createPlayerContainer(player, isCurrentUser, isNearby, color, palette) 
 
 // ── Scene drawing ──
 function drawPremiumFloor(container, palette) {
+  const worldBase = new Graphics();
+  worldBase.roundRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT, 42);
+  worldBase.fill({ color: palette.worldFillColor, alpha: palette.worldFillAlpha });
+  worldBase.stroke({ width: 4, color: palette.worldStrokeColor, alpha: palette.worldStrokeAlpha });
+  container.addChild(worldBase);
+
   const floor = new Graphics();
-  for (let y = -2000; y <= 2000; y += 60) {
-    floor.moveTo(-2000, y);
-    floor.lineTo(2000, y);
+  for (let y = 0; y <= CANVAS_HEIGHT; y += 60) {
+    floor.moveTo(0, y);
+    floor.lineTo(CANVAS_WIDTH, y);
   }
-  for (let x = -2000; x <= 2000; x += 60) {
-    floor.moveTo(x, -2000);
-    floor.lineTo(x, 2000);
+  for (let x = 0; x <= CANVAS_WIDTH; x += 60) {
+    floor.moveTo(x, 0);
+    floor.lineTo(x, CANVAS_HEIGHT);
   }
   floor.stroke({ width: 1.5, color: palette.gridColor, alpha: palette.gridAlpha });
   container.addChild(floor);
@@ -393,6 +424,10 @@ function getScenePalette(theme) {
       roomStrokeAlpha: 0.28,
       roomInnerStrokeAlpha: 0.18,
       roomTextColor: '#e2e8f0',
+      worldFillColor: 0x08111f,
+      worldFillAlpha: 0.92,
+      worldStrokeColor: 0x334155,
+      worldStrokeAlpha: 0.85,
       deskFillColor: 0x172033,
       deskStrokeAlpha: 0.42,
       auraColor: 0x34d399,
@@ -422,6 +457,10 @@ function getScenePalette(theme) {
     roomStrokeAlpha: 0.2,
     roomInnerStrokeAlpha: 0.1,
     roomTextColor: '#ffffff',
+    worldFillColor: 0xffffff,
+    worldFillAlpha: 0.94,
+    worldStrokeColor: 0xcbd5e1,
+    worldStrokeAlpha: 0.95,
     deskFillColor: 0xffffff,
     deskStrokeAlpha: 0.3,
     auraColor: 0x10b981,
