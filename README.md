@@ -46,6 +46,321 @@ virtual-cosmos/
 - redesigned join screen and chat UI
 - stale connection cleanup on both frontend and backend
 
+## Implementation Overview
+
+### High-level flow
+
+1. A user joins through `POST /api/users/join`
+2. The backend creates or reuses the MongoDB user record, assigns a spawn point, and adds an in-memory realtime session
+3. The frontend opens a STOMP-over-SockJS connection to `/ws` and sends the `userId` in the connect headers
+4. Movement updates are sent to `/app/move`
+5. The backend updates in-memory positions, recalculates proximity, and broadcasts fresh state
+6. When two users are near each other, the frontend subscribes to their deterministic chat room and renders the chat panel
+7. Chat messages are sent to `/app/chat`, persisted to MongoDB, then rebroadcast to `/topic/chat/{roomId}`
+
+### Backend implementation map
+
+- `backend/src/main/java/com/ryan/virtual_cosmos/controller/UserController.java`
+  Handles join, leave, and the debug active-user endpoint
+- `backend/src/main/java/com/ryan/virtual_cosmos/controller/ChatController.java`
+  Returns chat history for a room
+- `backend/src/main/java/com/ryan/virtual_cosmos/service/UserSessionService.java`
+  Owns in-memory active sessions, positions, session ids, and last activity timestamps
+- `backend/src/main/java/com/ryan/virtual_cosmos/service/ProximityService.java`
+  Computes Euclidean distance and proximity enter/leave transitions
+- `backend/src/main/java/com/ryan/virtual_cosmos/service/SessionCleanupService.java`
+  Centralizes explicit leave, websocket disconnect cleanup, and stale-session cleanup
+- `backend/src/main/java/com/ryan/virtual_cosmos/service/StaleSessionCleanupService.java`
+  Scheduled sweeper for inactive sessions
+- `backend/src/main/java/com/ryan/virtual_cosmos/websocket/MovementHandler.java`
+  Validates the current STOMP session, updates position, triggers proximity checks, and broadcasts positions
+- `backend/src/main/java/com/ryan/virtual_cosmos/websocket/ChatHandler.java`
+  Validates the sender session, stores chat, and broadcasts chat messages
+- `backend/src/main/java/com/ryan/virtual_cosmos/websocket/HeartbeatHandler.java`
+  Refreshes session liveness
+- `backend/src/main/java/com/ryan/virtual_cosmos/websocket/WebSocketEventListener.java`
+  Associates session ids on connect and cleans sessions up on disconnect
+
+### Frontend implementation map
+
+- `frontend/src/components/JoinScreen.jsx`
+  Join form and initial user creation flow
+- `frontend/src/store/GameContext.jsx`
+  Shared app state for current user, players, nearby users, chat rooms, and messages
+- `frontend/src/hooks/useWebSocket.js`
+  Connection lifecycle, subscriptions, heartbeats, movement publish, chat publish, and proximity-based room switching
+- `frontend/src/websocket/stompClient.js`
+  Singleton STOMP client and current session tracking
+- `frontend/src/canvas/GameCanvas.jsx`
+  PixiJS world rendering, local movement, player interpolation, and visible proximity radius
+- `frontend/src/components/ChatPanel.jsx`
+  Distance-driven chat panel UI, room resolution, and chat history loading
+- `frontend/src/lib/proximity.js`
+  Shared frontend distance helpers for chat visibility and partner selection
+
+### Frontend state and UI notes
+
+- `currentUser`
+  The joined user returned by `POST /api/users/join`
+- `players`
+  Current realtime players from `/topic/positions`
+- `nearbyUsers`
+  Nearby user ids for the current user
+- `activeChatRoom`
+  The currently subscribed deterministic chat room
+- `chatMessages`
+  Cached chat history by room
+- `localPosition`
+  Immediate local movement state used before remote broadcasts catch up
+
+Frontend UI highlights:
+
+- dark and light themes are supported across the app and persisted locally
+- the join flow is implemented as a dedicated landing-style entry screen
+- the world is rendered in PixiJS while React handles shell UI, chat, and theming
+- the chat panel is only shown when a nearby partner is resolved
+- disconnects clear stale player, proximity, and active-room state from the UI
+
+### Realtime behavior details
+
+- Active player state is stored in memory on the backend for low-latency updates
+- Durable user identity and chat history are stored in MongoDB
+- Room ids are deterministic: the two user ids are sorted and joined with `_`
+- The frontend uses a small exit buffer beyond the visible proximity radius so chat does not flicker when users hover near the edge
+- STOMP session validation is used for movement, chat, and heartbeat messages so an old socket cannot keep mutating state after a reconnect
+- Frontend heartbeats plus backend scheduled cleanup protect against stale zombie sessions
+
+### Frontend request usage
+
+The frontend currently uses:
+
+- REST:
+  - `POST /api/users/join`
+  - `DELETE /api/users/leave/{userId}?sessionId=...`
+  - `GET /api/chat/{roomId}`
+- STOMP publish:
+  - `/app/move`
+  - `/app/chat`
+  - `/app/heartbeat`
+- STOMP subscribe:
+  - `/topic/positions`
+  - `/topic/proximity`
+  - `/topic/chat/{roomId}`
+
+## API Reference
+
+### REST API
+
+#### `POST /api/users/join`
+
+Create or resume a user session and return spawn data.
+
+Request body:
+
+```json
+{
+  "username": "ryan",
+  "avatarColor": "#6366f1"
+}
+```
+
+Successful response:
+
+```json
+{
+  "userId": "69d294b0e40e77af811732c3",
+  "username": "ryan",
+  "avatarColor": "#6366f1",
+  "spawnX": 328.12,
+  "spawnY": 340.47
+}
+```
+
+#### `GET /api/users/active`
+
+Debug endpoint that returns currently active in-memory sessions.
+
+Typical response shape:
+
+```json
+[
+  {
+    "userId": "69d294b0e40e77af811732c3",
+    "username": "ryan",
+    "avatarColor": "#6366f1",
+    "x": 328.12,
+    "y": 340.47,
+    "sessionId": "abc123",
+    "lastActivityAt": "2026-04-07T10:41:18.123Z",
+    "nearbyUsers": ["69d2af7ce40e77af811732df"]
+  }
+]
+```
+
+#### `DELETE /api/users/leave/{userId}`
+
+Explicitly removes the active user session.
+
+Optional query parameter:
+
+- `sessionId`
+  When provided, the backend only removes the session if that `sessionId` still matches the current active socket for the user. This helps prevent an older tab from deleting a newer active connection.
+
+Example:
+
+```text
+DELETE /api/users/leave/69d294b0e40e77af811732c3?sessionId=abc123
+```
+
+Response:
+
+- `204 No Content`
+
+#### `GET /api/chat/{roomId}`
+
+Returns stored chat history for a room in chronological order.
+
+Example:
+
+```text
+GET /api/chat/69d294b0e40e77af811732c3_69d2af7ce40e77af811732df
+```
+
+Response:
+
+```json
+[
+  {
+    "id": "67f3...",
+    "senderId": "69d294b0e40e77af811732c3",
+    "senderUsername": "ryan",
+    "roomId": "69d294b0e40e77af811732c3_69d2af7ce40e77af811732df",
+    "content": "hey",
+    "timestamp": "2026-04-07T09:15:21.000Z"
+  }
+]
+```
+
+### WebSocket / STOMP API
+
+#### Endpoint
+
+- SockJS endpoint: `/ws`
+- STOMP app destination prefix: `/app`
+- STOMP broker topic prefix: `/topic`
+
+#### Connect headers
+
+The frontend sends the user id in the STOMP connect headers:
+
+```json
+{
+  "userId": "69d294b0e40e77af811732c3"
+}
+```
+
+#### Client publish destinations
+
+##### `SEND /app/move`
+
+Payload:
+
+```json
+{
+  "userId": "69d294b0e40e77af811732c3",
+  "x": 412.4,
+  "y": 219.8
+}
+```
+
+Behavior:
+
+- validates the current STOMP session for that user
+- updates the in-memory position
+- recalculates proximity
+- broadcasts `/topic/positions`
+
+##### `SEND /app/chat`
+
+Payload:
+
+```json
+{
+  "senderId": "69d294b0e40e77af811732c3",
+  "senderUsername": "ryan",
+  "roomId": "69d294b0e40e77af811732c3_69d2af7ce40e77af811732df",
+  "content": "hello"
+}
+```
+
+Behavior:
+
+- validates the sender session
+- assigns a timestamp if needed
+- stores the message in MongoDB
+- broadcasts `/topic/chat/{roomId}`
+
+##### `SEND /app/heartbeat`
+
+Payload:
+
+```json
+{
+  "userId": "69d294b0e40e77af811732c3"
+}
+```
+
+Behavior:
+
+- refreshes `lastActivityAt` for the current session
+- helps the backend remove only truly stale connections
+
+#### Client subscriptions
+
+##### `SUBSCRIBE /topic/positions`
+
+Broadcast payload:
+
+```json
+[
+  {
+    "userId": "69d294b0e40e77af811732c3",
+    "username": "ryan",
+    "avatarColor": "#6366f1",
+    "x": 412.4,
+    "y": 219.8,
+    "nearbyUsers": ["69d2af7ce40e77af811732df"]
+  }
+]
+```
+
+##### `SUBSCRIBE /topic/proximity`
+
+Broadcast payload:
+
+```json
+{
+  "userId": "69d294b0e40e77af811732c3",
+  "nearbyUsers": ["69d2af7ce40e77af811732df"]
+}
+```
+
+The frontend filters these updates so each client only applies its own proximity payload.
+
+##### `SUBSCRIBE /topic/chat/{roomId}`
+
+Broadcast payload:
+
+```json
+{
+  "senderId": "69d294b0e40e77af811732c3",
+  "senderUsername": "ryan",
+  "roomId": "69d294b0e40e77af811732c3_69d2af7ce40e77af811732df",
+  "content": "hello",
+  "timestamp": "2026-04-07T09:15:21.000Z"
+}
+```
+
 ## Prerequisites
 
 Install these before running the app:
